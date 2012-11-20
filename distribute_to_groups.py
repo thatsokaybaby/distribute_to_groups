@@ -143,11 +143,11 @@ FROM person_in_grp AS pig_1
 JOIN person AS p_1
     ON pig_1.p_reg_num = p_1.reg_num
 JOIN grp_size_overfull AS gsof_1
-    ON pig_1.grp = gsof_1.grp
+    ON pig_1.g_num = gsof_1.g_num
 JOIN person_in_grp AS pig_2
-    ON p_1.{0:s} = pig_2.grp
+    ON p_1.{0:s} = pig_2.g_num
 JOIN person AS p_2
-    ON pig_2.reg_num = p_2.reg_num
+    ON pig_2.p_reg_num = p_2.reg_num
 JOIN grp_size_available AS gsa
     ON p_2.{1:s} = gsa.g_num
 LEFT OUTER JOIN grp_size_overfull AS gsof_2
@@ -196,44 +196,68 @@ c.execute(SQL_INSERT_PERSON_IN_GRP)
 conn.commit()
 
 
-# phase 1: try to move persons from overfull groups into not full groups.
-# only if there are overfull groups
-if c.execute(SQL_SELECT_GRP_SIZE_OVERFULL).fetchone():
-    # obviously pref_2 should be tried before pref_3
-    for pref_field in ('pref_2', 'pref_3'):
-        # select a person that can be moved, None if no such person exists
-        person = c.execute(SQL_SELECT_PERSONS_1.format(pref_field)).fetchone()
+# for convenience, meaningful constants
+ACTION_MOVE = 1
+ACTION_REPLACE = 2
+
+# ACTION_MOVE = find a a person in an overfull group that can move to a not yet
+# full group of his preference, if multiple exist, find the one that can move
+# to the not yet full group with least members.
+# ACTION_REPLACE = find a a person in an overfull group that can move to a
+# group of his preference and replace another person which can then move to a
+# not yet full group of his preference, if multiple exist, find the one that
+# can replace the person to move to the not yet full group with least members.
+# this could be done for n-th degree (but is not done in this script).
+#
+# order is determined by number and kind of pref-assignments created:
+#
+# pref_2, which is the best outcome
+# pref_2 + pref_2,
+# ref_3,
+# pref_2 + pref_3,
+# pref_3 + pref_2,
+# and finally the worst, pref_3 + pref_3
+for action, pref_a, pref_b in ((ACTION_MOVE, 'pref_2', None),
+        (ACTION_REPLACE, 'pref_2', 'pref_2'), (ACTION_MOVE, 'pref_3', None),
+        (ACTION_REPLACE, 'pref_2', 'pref_3'),
+        (ACTION_REPLACE, 'pref_3', 'pref_2'),
+        (ACTION_REPLACE, 'pref_3', 'pref_3')):
+    if action == ACTION_MOVE:
+        # find person that can move
+        person = c.execute(SQL_SELECT_PERSONS_1.format(pref_a)).fetchone()
         # and do this as long as possible
         while person:
             # now re-assign the person
-            c.execute(SQL_UPDATE_PERSON_IN_GRP_COMMENT, (person[1], {'pref_2' : 2, 'pref_3' : 3}[pref_field], person[0]))
+            c.execute(SQL_UPDATE_PERSON_IN_GRP_COMMENT, (person[1],
+                    {'pref_2' : 2, 'pref_3' : 3}[pref_a], person[0]))
             conn.commit()
             # refresh
-            person = c.execute(SQL_SELECT_PERSONS_1.format(pref_field)).fetchone()
-
-# phase 2: try to find persons that can replace others which can be moved to not full groups.
-# only if there are overfull groups
-if c.execute(SQL_SELECT_GRP_SIZE_OVERFULL).fetchone():
-    # obviously pref_2 should be tried before pref_3
-    for pref_field_1 in ('pref_2', 'pref_3'):
-        # same goes for the group the replaced person is re-assigned to
-        for pref_field_2 in ('pref_2', 'pref_3'):
-            replace_persons = c.execute(SQL_SELECT_PERSONS_2.format(pref_field_1, pref_field_2)).fetchone()
+            person = c.execute(SQL_SELECT_PERSONS_1.format(pref_a)).fetchone()
+    elif action == ACTION_REPLACE:
+            # find a person that can replace another
+            replace_persons = c.execute(SQL_SELECT_PERSONS_2.format(pref_a,
+                    pref_b)).fetchone()
             # as long as there are persons to replace
             while replace_persons:
                 # re-assign the persons
-                c.execute(SQL_UPDATE_PERSON_IN_GRP_COMMENT, (replace_persons[1], {'pref_2' : 2, 'pref_3' : 3}[pref_field_1], replace_persons[0]))
-                c.execute(SQL_UPDATE_PERSON_IN_GRP_COMMENT, (replace_persons[4], {'pref_2' : 2, 'pref_3' : 3}[pref_field_2], replace_persons[3]))
+                c.execute(SQL_UPDATE_PERSON_IN_GRP_COMMENT, (replace_persons[1],
+                        {'pref_2' : 2, 'pref_3' : 3}[pref_a],
+                        replace_persons[0]))
+                c.execute(SQL_UPDATE_PERSON_IN_GRP_COMMENT, (replace_persons[3],
+                        {'pref_2' : 2, 'pref_3' : 3}[pref_b],
+                        replace_persons[2]))
                 conn.commit()
                 # refresh
-                replace_persons = c.execute(SQL_SELECT_PERSONS_2.format(pref_field_1, pref_field_2)).fetchone()
+                replace_persons = c.execute(SQL_SELECT_PERSONS_2.format(pref_a,
+                        pref_b)).fetchone()
 
 # print groups, members
 # iterate over groups
 for g_name, g_num in c.execute(SQL_SELECT_GRP).fetchall():
     print('== ({0:d}) {1:s} =='.format(g_num, g_name.strip()))
     # iterate over members
-    for p_reg_num, p_name, comment in c.execute(SQL_GRP_MEMBERS, (g_num,)).fetchall():
+    for p_reg_num, p_name, comment in c.execute(SQL_GRP_MEMBERS,
+        (g_num,)).fetchall():
         if SHOW_PREF:
             print(p_reg_num, ' (', comment, ')', sep='')
         else:
